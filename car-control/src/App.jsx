@@ -1,122 +1,198 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useState, useEffect, useRef, useCallback } from "react";
 
-function App() {
-  const [count, setCount] = useState(0)
+/* ---------- CONFIG ---------- */
+// Leave empty to run with simulated sensor data.
+// Set to your car's address (e.g. "ws://192.168.4.1:81") to connect automatically.
+const WS_URL = "";
+const BRAKE_CM = 20; // auto-stop distance for forward motion
+const WARN_CM = 60;
+const MAX_CM = 150;
 
+// Commands sent to the car: { cmd: "F"|"B"|"L"|"R"|"S", speed: 0-100 }
+// Data expected from the car: { front: cm, left: cm, right: cm }
+
+const css = `
+@import url('https://fonts.googleapis.com/css2?family=Stardos+Stencil:wght@700&family=Barlow+Condensed:wght@500;600&display=swap');
+.cc{--bg:#241812;--panel:#382619;--line:#6b4a32;--mid:#8a6242;--tan:#c9a27a;--cream:#ecd9c0;--amber:#d9822b;--red:#b5432f;--ok:#b08a5b;
+  min-height:100%;background:var(--bg);color:var(--cream);font-family:'Barlow Condensed',sans-serif;font-size:clamp(16px,2.6vw,20px);
+  padding:clamp(10px,3vw,24px);display:flex;flex-direction:column;align-items:center;gap:clamp(12px,2.5vw,20px);box-sizing:border-box}
+.cc *{box-sizing:border-box}
+.cc h1,.cc h2{font-family:'Stardos Stencil',serif;margin:0;letter-spacing:.06em;font-weight:700}
+.cc h1{font-size:clamp(22px,5vw,32px);color:var(--tan)}
+.cc h2{font-size:clamp(16px,3vw,20px);color:var(--tan);border-bottom:2px solid var(--line);padding-bottom:6px;margin-bottom:12px}
+.cc header{width:100%;max-width:560px;border:2px solid var(--tan);background:var(--line);padding:10px 16px;text-align:center}
+.cc header h1{color:var(--cream)}
+.cc .panel{width:100%;max-width:560px;background:var(--panel);border:2px solid var(--line);padding:clamp(12px,3vw,20px);position:relative}
+.cc .panel::before,.cc .panel::after{content:"";position:absolute;width:10px;height:10px;background:var(--tan)}
+.cc .panel::before{top:-2px;left:-2px}.cc .panel::after{bottom:-2px;right:-2px}
+.cc .radar{width:100%;max-width:440px;margin:0 auto;display:block}
+.cc .readouts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;text-align:center}
+.cc .readouts div{border:2px solid var(--line);padding:6px}
+.cc .readouts b{display:block;font-family:'Stardos Stencil',serif;font-size:clamp(20px,4vw,26px)}
+.cc .alert{margin-top:12px;padding:8px 12px;border:2px solid var(--ok);color:var(--ok);font-weight:600;letter-spacing:.06em;text-align:center}
+.cc .alert.warn{border-color:var(--amber);color:var(--amber)}
+.cc .alert.halt{border-color:var(--red);background:var(--red);color:var(--cream)}
+.cc .dpad{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(6px,2vw,10px);width:min(100%,340px);margin:4px auto 16px}
+.cc .dpad span{display:block}
+.cc button{font:inherit;font-weight:600;letter-spacing:.06em;cursor:pointer;background:var(--line);color:var(--cream);border:2px solid var(--tan);
+  touch-action:none;user-select:none;-webkit-user-select:none}
+.cc button:hover{background:var(--mid)}
+.cc button:focus-visible,.cc input:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+.cc button.active{background:var(--tan);color:var(--bg)}
+.cc .dpad button{aspect-ratio:1;width:100%;font-size:clamp(22px,6vw,32px);padding:0}
+.cc .dpad .stop{background:var(--red);border-color:var(--cream);font-size:clamp(14px,3.5vw,18px)}
+.cc .dpad .stop:hover,.cc .dpad .stop.active{background:#cf5540;color:var(--cream)}
+.cc input[type=range]{width:100%;accent-color:var(--tan)}
+.cc .hint{color:var(--tan);font-size:.85em;margin:8px 0 0}
+@media (min-width:900px){
+  .cc .layout{display:flex;gap:20px;width:100%;max-width:1000px;align-items:stretch}
+  .cc .layout .panel{max-width:none;flex:1}
+}
+@media (max-width:899px){.cc .layout{display:contents}}
+`;
+
+const zoneColor = (d) => (d < BRAKE_CM ? "#b5432f" : d < WARN_CM ? "#d9822b" : "#b08a5b");
+
+/* ---------- RADAR ---------- */
+const CX = 150, CY = 190;
+const pt = (r, deg) => {
+  const a = (deg * Math.PI) / 180;
+  return [CX + r * Math.sin(a), CY - r * Math.cos(a)];
+};
+const wedge = (r, a1, a2) => {
+  const [x1, y1] = pt(r, a1), [x2, y2] = pt(r, a2);
+  return `M${CX} ${CY} L${x1} ${y1} A${r} ${r} 0 0 1 ${x2} ${y2} Z`;
+};
+
+function Radar({ front, left, right }) {
+  const scale = (d) => 30 + (Math.min(d, MAX_CM) / MAX_CM) * 140;
+  const zones = [
+    { d: left, a1: -90, a2: -30 },
+    { d: front, a1: -30, a2: 30 },
+    { d: right, a1: 30, a2: 90 },
+  ];
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+    <svg className="radar" viewBox="0 0 300 200" role="img" aria-label="Obstacle radar">
+      {[60, 100, 140, 170].map((r) => (
+        <path key={r} d={`M${pt(r, -90)} A${r} ${r} 0 0 1 ${pt(r, 90)}`} fill="none" stroke="#6b4a32" strokeWidth="2" />
+      ))}
+      {[-30, 30].map((a) => (
+        <line key={a} x1={CX} y1={CY} x2={pt(175, a)[0]} y2={pt(175, a)[1]} stroke="#6b4a32" strokeWidth="2" />
+      ))}
+      {zones.map((z, i) => (
+        <path key={i} d={wedge(scale(z.d), z.a1, z.a2)} fill={zoneColor(z.d)} fillOpacity="0.85" stroke="#ecd9c0" strokeWidth="1.5" />
+      ))}
+      <rect x={CX - 12} y={CY - 26} width="24" height="36" fill="#241812" stroke="#c9a27a" strokeWidth="2" />
+      <rect x={CX - 5} y={CY - 26} width="10" height="8" fill="#c9a27a" />
+    </svg>
+  );
 }
 
-export default App
+/* ---------- MAIN ---------- */
+export default function CarControl() {
+  const [speed, setSpeed] = useState(60);
+  const [dir, setDir] = useState("S");
+  const [dist, setDist] = useState({ front: 140, left: 120, right: 130 });
+  const ws = useRef(null);
+  const speedRef = useRef(speed);
+  const distRef = useRef(dist);
+  const dirRef = useRef("S");
+  speedRef.current = speed;
+  distRef.current = dist;
+
+  const send = useCallback((cmd) => {
+    if (cmd === "F" && distRef.current.front < BRAKE_CM) cmd = "S"; // forward locked
+    dirRef.current = cmd;
+    setDir(cmd);
+    if (ws.current && ws.current.readyState === 1) {
+      ws.current.send(JSON.stringify({ cmd, speed: cmd === "S" ? 0 : speedRef.current }));
+    }
+  }, []);
+
+  /* real car (if WS_URL is set) or simulated sensors */
+  useEffect(() => {
+    if (WS_URL) {
+      const s = new WebSocket(WS_URL);
+      ws.current = s;
+      s.onmessage = (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (typeof d.front === "number") setDist({ front: d.front, left: d.left, right: d.right });
+        } catch { /* ignore malformed frame */ }
+      };
+      return () => s.close();
+    }
+    const id = setInterval(() => {
+      const walk = (v) => Math.max(8, Math.min(MAX_CM, v + (Math.random() - 0.5) * 40 - (dirRef.current === "F" ? 6 : 0)));
+      setDist((d) => ({ front: walk(d.front), left: walk(d.left), right: walk(d.right) }));
+    }, 600);
+    return () => clearInterval(id);
+  }, []);
+
+  /* auto-brake */
+  useEffect(() => {
+    if (dist.front < BRAKE_CM && dirRef.current === "F") send("S");
+  }, [dist.front, send]);
+
+  /* keyboard */
+  useEffect(() => {
+    const map = { ArrowUp: "F", w: "F", ArrowDown: "B", s: "B", ArrowLeft: "L", a: "L", ArrowRight: "R", d: "R", " ": "S" };
+    const down = (e) => {
+      if (e.target.tagName === "INPUT" || e.repeat) return;
+      const c = map[e.key];
+      if (c) { e.preventDefault(); send(c); }
+    };
+    const up = (e) => { if (map[e.key] && map[e.key] !== "S") send("S"); };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+  }, [send]);
+
+  const nearest = Math.min(dist.front, dist.left, dist.right);
+  const status = dist.front < BRAKE_CM ? ["halt", "OBSTACLE AHEAD: FORWARD LOCKED"]
+    : nearest < WARN_CM ? ["warn", "CAUTION: OBJECT CLOSE"] : ["", "PATH CLEAR"];
+
+  const Btn = ({ c, label, cls = "" }) => (
+    <button
+      className={`${cls} ${dir === c ? "active" : ""}`}
+      aria-label={label}
+      onPointerDown={() => send(c)}
+      onPointerUp={() => c !== "S" && send("S")}
+      onPointerLeave={() => dir === c && c !== "S" && send("S")}
+    >
+      {c === "F" ? "▲" : c === "B" ? "▼" : c === "L" ? "◀" : c === "R" ? "▶" : "STOP"}
+    </button>
+  );
+
+  return (
+    <div className="cc">
+      <style>{css}</style>
+      <header><h1>RECON UNIT 01</h1></header>
+
+      <div className="layout">
+        <section className="panel">
+          <h2>Obstacle radar</h2>
+          <Radar {...dist} />
+          <div className="readouts">
+            {[["Left", dist.left], ["Front", dist.front], ["Right", dist.right]].map(([n, v]) => (
+              <div key={n}><b style={{ color: zoneColor(v) }}>{Math.round(v)}</b>{n} cm</div>
+            ))}
+          </div>
+          <div className={`alert ${status[0]}`}>{status[1]}</div>
+        </section>
+
+        <section className="panel">
+          <h2>Drive controls</h2>
+          <div className="dpad">
+            <span /><Btn c="F" label="Forward" /><span />
+            <Btn c="L" label="Left" /><Btn c="S" label="Stop" cls="stop" /><Btn c="R" label="Right" />
+            <span /><Btn c="B" label="Reverse" /><span />
+          </div>
+          <label htmlFor="spd">Speed: {speed}%</label>
+          <input id="spd" type="range" min="10" max="100" step="5" value={speed} onChange={(e) => setSpeed(+e.target.value)} />
+          <p className="hint">Hold to drive, release to stop. Keyboard: WASD or arrows, Space to stop.</p>
+        </section>
+      </div>
+    </div>
+  );
+}
