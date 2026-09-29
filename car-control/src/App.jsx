@@ -6,28 +6,33 @@ import { db, authReady } from "./firebase";
 const BRAKE_CM = 20;
 const WARN_CM = 60;
 const MAX_CM = 150;
+const STALE_MS = 3000; // no sensor update in this long => treat as offline
 
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Stardos+Stencil:wght@700&family=Barlow+Condensed:wght@500;600&display=swap');
-.cc{--bg:#241812;--panel:#382619;--line:#6b4a32;--mid:#8a6242;--tan:#c9a27a;--cream:#ecd9c0;--amber:#d9822b;--red:#b5432f;--ok:#b08a5b;
+.cc{--bg:#241812;--panel:#382619;--line:#6b4a32;--mid:#8a6242;--tan:#c9a27a;--cream:#ecd9c0;--amber:#d9822b;--red:#b5432f;--ok:#b08a5b;--offline:#5a5145;
   min-height:100%;background:var(--bg);color:var(--cream);font-family:'Barlow Condensed',sans-serif;font-size:clamp(16px,2.6vw,20px);
   padding:clamp(10px,3vw,24px);display:flex;flex-direction:column;align-items:center;gap:clamp(12px,2.5vw,20px);box-sizing:border-box}
 .cc *{box-sizing:border-box}
 .cc h1,.cc h2{font-family:'Stardos Stencil',serif;margin:0;letter-spacing:.06em;font-weight:700}
 .cc h1{font-size:clamp(22px,5vw,32px);color:var(--tan)}
-.cc h2{font-size:clamp(16px,3vw,20px);color:var(--tan);border-bottom:2px solid var(--line);padding-bottom:6px;margin-bottom:12px}
-.cc header{width:100%;max-width:560px;border:2px solid var(--tan);background:var(--line);padding:10px 16px;text-align:center}
+.cc h2{font-size:clamp(16px,3vw,20px);color:var(--tan);border-bottom:2px solid var(--line);padding-bottom:6px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.cc header{width:100%;max-width:560px;border:2px solid var(--tan);background:var(--line);padding:10px 16px;text-align:center;display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap}
 .cc header h1{color:var(--cream)}
+.cc .link-badge{font-size:.55em;letter-spacing:.08em;padding:3px 10px;border:2px solid var(--ok);color:var(--ok);font-family:'Barlow Condensed',sans-serif;font-weight:600}
+.cc .link-badge.off{border-color:var(--offline);color:var(--offline)}
 .cc .panel{width:100%;max-width:560px;background:var(--panel);border:2px solid var(--line);padding:clamp(12px,3vw,20px);position:relative}
 .cc .panel::before,.cc .panel::after{content:"";position:absolute;width:10px;height:10px;background:var(--tan)}
 .cc .panel::before{top:-2px;left:-2px}.cc .panel::after{bottom:-2px;right:-2px}
-.cc .radar{width:100%;max-width:440px;margin:0 auto;display:block}
+.cc .radar{width:100%;max-width:440px;margin:0 auto;display:block;transition:opacity .3s}
+.cc .radar.offline{opacity:.35}
 .cc .readouts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;text-align:center}
 .cc .readouts div{border:2px solid var(--line);padding:6px}
 .cc .readouts b{display:block;font-family:'Stardos Stencil',serif;font-size:clamp(20px,4vw,26px)}
 .cc .alert{margin-top:12px;padding:8px 12px;border:2px solid var(--ok);color:var(--ok);font-weight:600;letter-spacing:.06em;text-align:center}
 .cc .alert.warn{border-color:var(--amber);color:var(--amber)}
 .cc .alert.halt{border-color:var(--red);background:var(--red);color:var(--cream)}
+.cc .alert.offline{border-color:var(--offline);color:var(--offline)}
 .cc .dpad{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(6px,2vw,10px);width:min(100%,340px);margin:4px auto 16px}
 .cc .dpad span{display:block}
 .cc button{font:inherit;font-weight:600;letter-spacing:.06em;cursor:pointer;background:var(--line);color:var(--cream);border:2px solid var(--tan);
@@ -60,7 +65,7 @@ const wedge = (r, a1, a2) => {
   return `M${CX} ${CY} L${x1} ${y1} A${r} ${r} 0 0 1 ${x2} ${y2} Z`;
 };
 
-function Radar({ front, left, right }) {
+function Radar({ front, left, right, live }) {
   const scale = (d) => 30 + (Math.min(d, MAX_CM) / MAX_CM) * 140;
   const zones = [
     { d: left,  a1: -90, a2: -30 },
@@ -68,7 +73,7 @@ function Radar({ front, left, right }) {
     { d: right, a1:  30, a2:  90 },
   ];
   return (
-    <svg className="radar" viewBox="0 0 300 200" role="img" aria-label="Obstacle radar">
+    <svg className={`radar ${live ? "" : "offline"}`} viewBox="0 0 300 200" role="img" aria-label="Obstacle radar">
       {[60, 100, 140, 170].map((r) => (
         <path key={r} d={`M${pt(r, -90)} A${r} ${r} 0 0 1 ${pt(r, 90)}`} fill="none" stroke="#6b4a32" strokeWidth="2" />
       ))}
@@ -76,7 +81,7 @@ function Radar({ front, left, right }) {
         <line key={a} x1={CX} y1={CY} x2={pt(175, a)[0]} y2={pt(175, a)[1]} stroke="#6b4a32" strokeWidth="2" />
       ))}
       {zones.map((z, i) => (
-        <path key={i} d={wedge(scale(z.d), z.a1, z.a2)} fill={zoneColor(z.d)} fillOpacity="0.85" stroke="#ecd9c0" strokeWidth="1.5" />
+        <path key={i} d={wedge(scale(z.d), z.a1, z.a2)} fill={live ? zoneColor(z.d) : "#5a5145"} fillOpacity="0.85" stroke="#ecd9c0" strokeWidth="1.5" />
       ))}
       <rect x={CX - 12} y={CY - 26} width="24" height="36" fill="#241812" stroke="#c9a27a" strokeWidth="2" />
       <rect x={CX - 5} y={CY - 26} width="10" height="8" fill="#c9a27a" />
@@ -88,20 +93,32 @@ function Radar({ front, left, right }) {
 export default function CarControl() {
   const [speed, setSpeed] = useState(60);
   const [dir, setDir] = useState("S");
-  const [dist, setDist] = useState({ front: 140, left: 120, right: 130 });
+  const [dist, setDist] = useState({ front: MAX_CM, left: MAX_CM, right: MAX_CM });
+  const [lastSeen, setLastSeen] = useState(0);
+  const [now, setNow] = useState(Date.now());
 
   const speedRef = useRef(speed);
   const distRef = useRef(dist);
   const dirRef = useRef("S");
+  const liveRef = useRef(false);
   speedRef.current = speed;
   distRef.current = dist;
 
-  // 🔥 Ensure anonymous auth is complete before any DB writes
+  // Ensure anonymous auth is complete before any DB writes
   useEffect(() => { authReady.catch(() => {}); }, []);
 
-  // 🔥 Push a command to Firebase
+  // Clock tick, used only to re-evaluate whether the sensor feed has gone stale
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const live = lastSeen > 0 && now - lastSeen < STALE_MS;
+  liveRef.current = live;
+
+  // Push a command to Firebase
   const send = useCallback((cmd) => {
-    if (cmd === "F" && distRef.current.front < BRAKE_CM) cmd = "S";
+    if (cmd === "F" && liveRef.current && distRef.current.front < BRAKE_CM) cmd = "S";
     dirRef.current = cmd;
     setDir(cmd);
 
@@ -112,34 +129,35 @@ export default function CarControl() {
     }).catch((e) => console.error("DB write failed:", e));
   }, []);
 
-  // 🔥 Also push speed changes live
+  // Also push speed changes live
   useEffect(() => {
-    set(ref(db, "command/speed"), dirRef.current === "S" ? 0 : speed)
-      .catch(() => {});
+    set(ref(db, "command/speed"), dirRef.current === "S" ? 0 : speed).catch(() => {});
   }, [speed]);
 
-  // 🔥 Subscribe to sensor data from the ESP32
+  // Subscribe to live ultrasonic readings from the ESP32 at /sensor
+  // Expected shape written by the firmware: { front: cm, left: cm, right: cm, ts: millis }
   useEffect(() => {
     const unsub = onValue(ref(db, "sensor"), (snap) => {
       const d = snap.val();
       if (!d) return;
       setDist({
-        front: Number(d.front ?? 140),
-        left:  Number(d.left  ?? 120),
-        right: Number(d.right ?? 130),
+        front: Number(d.front ?? MAX_CM),
+        left: Number(d.left ?? MAX_CM),
+        right: Number(d.right ?? MAX_CM),
       });
+      setLastSeen(Date.now());
     });
     return () => unsub();
   }, []);
 
-  // Auto-brake (local mirror of what ESP32 should also do)
+  // Auto-brake, only acts on real readings
   useEffect(() => {
-    if (dist.front < BRAKE_CM && dirRef.current === "F") send("S");
-  }, [dist.front, send]);
+    if (live && dist.front < BRAKE_CM && dirRef.current === "F") send("S");
+  }, [dist.front, live, send]);
 
   // Keyboard
   useEffect(() => {
-    const map = { ArrowUp:"F", w:"F", ArrowDown:"B", s:"B", ArrowLeft:"L", a:"L", ArrowRight:"R", d:"R", " ":"S" };
+    const map = { ArrowUp: "F", w: "F", ArrowDown: "B", s: "B", ArrowLeft: "L", a: "L", ArrowRight: "R", d: "R", " ": "S" };
     const down = (e) => {
       if (e.target.tagName === "INPUT" || e.repeat) return;
       const c = map[e.key];
@@ -152,8 +170,13 @@ export default function CarControl() {
   }, [send]);
 
   const nearest = Math.min(dist.front, dist.left, dist.right);
-  const status = dist.front < BRAKE_CM ? ["halt", "OBSTACLE AHEAD: FORWARD LOCKED"]
-    : nearest < WARN_CM ? ["warn", "CAUTION: OBJECT CLOSE"] : ["", "PATH CLEAR"];
+  const status = !live
+    ? ["offline", "NO SENSOR LINK"]
+    : dist.front < BRAKE_CM
+    ? ["halt", "OBSTACLE AHEAD: FORWARD LOCKED"]
+    : nearest < WARN_CM
+    ? ["warn", "CAUTION: OBJECT CLOSE"]
+    : ["", "PATH CLEAR"];
 
   const Btn = ({ c, label, cls = "" }) => (
     <button
@@ -170,14 +193,17 @@ export default function CarControl() {
   return (
     <div className="cc">
       <style>{css}</style>
-      <header><h1>RECON UNIT 01</h1></header>
+      <header>
+        <h1>RECON UNIT 01</h1>
+        <span className={`link-badge ${live ? "" : "off"}`}>{live ? "SENSOR LINK" : "NO LINK"}</span>
+      </header>
       <div className="layout">
         <section className="panel">
           <h2>Obstacle radar</h2>
-          <Radar {...dist} />
+          <Radar {...dist} live={live} />
           <div className="readouts">
             {[["Left", dist.left], ["Front", dist.front], ["Right", dist.right]].map(([n, v]) => (
-              <div key={n}><b style={{ color: zoneColor(v) }}>{Math.round(v)}</b>{n} cm</div>
+              <div key={n}><b style={{ color: live ? zoneColor(v) : "#5a5145" }}>{live ? Math.round(v) : "--"}</b>{n} cm</div>
             ))}
           </div>
           <div className={`alert ${status[0]}`}>{status[1]}</div>

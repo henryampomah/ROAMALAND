@@ -6,13 +6,14 @@ import { getDatabase } from "firebase/database";
 // ⚠️ REPLACE with your real Firebase web config
 // (Firebase Console → Project Settings → General → Your apps → Web app)
 const firebaseConfig = {
-  apiKey: "AIza...",
+  apiKey: "AIzaSyDacSBDECfc8ZF4wBeI_LikkI2ZJBOVbQs",
   authDomain: "roamaland.firebaseapp.com",
-  databaseURL: "https://roamaland-default-rtdb.firebaseio.com",  // ← REQUIRED
+  databaseURL: "https://roamaland-default-rtdb.firebaseio.com",
   projectId: "roamaland",
-  storageBucket: "roamaland.appspot.com",
-  messagingSenderId: "1234567890",
-  appId: "1:1234567890:web:abcdef",
+  storageBucket: "roamaland.firebasestorage.app",
+  messagingSenderId: "1054433997005",
+  appId: "1:1054433997005:web:5bb4c2020e5ae3ead17984",
+  measurementId: "G-5FEHZ93P4T"
 };
 
 const app = initializeApp(firebaseConfig);
