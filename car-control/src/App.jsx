@@ -1,15 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { ref, set, onValue } from "firebase/database";
+import { db, authReady } from "./firebase";
 
 /* ---------- CONFIG ---------- */
-// Leave empty to run with simulated sensor data.
-// Set to your car's address (e.g. "ws://192.168.4.1:81") to connect automatically.
-const WS_URL = "";
-const BRAKE_CM = 20; // auto-stop distance for forward motion
+const BRAKE_CM = 20;
 const WARN_CM = 60;
 const MAX_CM = 150;
-
-// Commands sent to the car: { cmd: "F"|"B"|"L"|"R"|"S", speed: 0-100 }
-// Data expected from the car: { front: cm, left: cm, right: cm }
 
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Stardos+Stencil:wght@700&family=Barlow+Condensed:wght@500;600&display=swap');
@@ -67,9 +63,9 @@ const wedge = (r, a1, a2) => {
 function Radar({ front, left, right }) {
   const scale = (d) => 30 + (Math.min(d, MAX_CM) / MAX_CM) * 140;
   const zones = [
-    { d: left, a1: -90, a2: -30 },
-    { d: front, a1: -30, a2: 30 },
-    { d: right, a1: 30, a2: 90 },
+    { d: left,  a1: -90, a2: -30 },
+    { d: front, a1: -30, a2:  30 },
+    { d: right, a1:  30, a2:  90 },
   ];
   return (
     <svg className="radar" viewBox="0 0 300 200" role="img" aria-label="Obstacle radar">
@@ -93,50 +89,57 @@ export default function CarControl() {
   const [speed, setSpeed] = useState(60);
   const [dir, setDir] = useState("S");
   const [dist, setDist] = useState({ front: 140, left: 120, right: 130 });
-  const ws = useRef(null);
+
   const speedRef = useRef(speed);
   const distRef = useRef(dist);
   const dirRef = useRef("S");
   speedRef.current = speed;
   distRef.current = dist;
 
+  // 🔥 Ensure anonymous auth is complete before any DB writes
+  useEffect(() => { authReady.catch(() => {}); }, []);
+
+  // 🔥 Push a command to Firebase
   const send = useCallback((cmd) => {
-    if (cmd === "F" && distRef.current.front < BRAKE_CM) cmd = "S"; // forward locked
+    if (cmd === "F" && distRef.current.front < BRAKE_CM) cmd = "S";
     dirRef.current = cmd;
     setDir(cmd);
-    if (ws.current && ws.current.readyState === 1) {
-      ws.current.send(JSON.stringify({ cmd, speed: cmd === "S" ? 0 : speedRef.current }));
-    }
+
+    set(ref(db, "command"), {
+      cmd,
+      speed: cmd === "S" ? 0 : speedRef.current,
+      ts: Date.now(),
+    }).catch((e) => console.error("DB write failed:", e));
   }, []);
 
-  /* real car (if WS_URL is set) or simulated sensors */
+  // 🔥 Also push speed changes live
   useEffect(() => {
-    if (WS_URL) {
-      const s = new WebSocket(WS_URL);
-      ws.current = s;
-      s.onmessage = (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          if (typeof d.front === "number") setDist({ front: d.front, left: d.left, right: d.right });
-        } catch { /* ignore malformed frame */ }
-      };
-      return () => s.close();
-    }
-    const id = setInterval(() => {
-      const walk = (v) => Math.max(8, Math.min(MAX_CM, v + (Math.random() - 0.5) * 40 - (dirRef.current === "F" ? 6 : 0)));
-      setDist((d) => ({ front: walk(d.front), left: walk(d.left), right: walk(d.right) }));
-    }, 600);
-    return () => clearInterval(id);
+    set(ref(db, "command/speed"), dirRef.current === "S" ? 0 : speed)
+      .catch(() => {});
+  }, [speed]);
+
+  // 🔥 Subscribe to sensor data from the ESP32
+  useEffect(() => {
+    const unsub = onValue(ref(db, "sensor"), (snap) => {
+      const d = snap.val();
+      if (!d) return;
+      setDist({
+        front: Number(d.front ?? 140),
+        left:  Number(d.left  ?? 120),
+        right: Number(d.right ?? 130),
+      });
+    });
+    return () => unsub();
   }, []);
 
-  /* auto-brake */
+  // Auto-brake (local mirror of what ESP32 should also do)
   useEffect(() => {
     if (dist.front < BRAKE_CM && dirRef.current === "F") send("S");
   }, [dist.front, send]);
 
-  /* keyboard */
+  // Keyboard
   useEffect(() => {
-    const map = { ArrowUp: "F", w: "F", ArrowDown: "B", s: "B", ArrowLeft: "L", a: "L", ArrowRight: "R", d: "R", " ": "S" };
+    const map = { ArrowUp:"F", w:"F", ArrowDown:"B", s:"B", ArrowLeft:"L", a:"L", ArrowRight:"R", d:"R", " ":"S" };
     const down = (e) => {
       if (e.target.tagName === "INPUT" || e.repeat) return;
       const c = map[e.key];
@@ -168,7 +171,6 @@ export default function CarControl() {
     <div className="cc">
       <style>{css}</style>
       <header><h1>RECON UNIT 01</h1></header>
-
       <div className="layout">
         <section className="panel">
           <h2>Obstacle radar</h2>
